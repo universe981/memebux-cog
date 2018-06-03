@@ -1,12 +1,16 @@
 import discord
 from discord.ext import commands
-import json as      json
 import time
 from decimal import *
 import json
-import datetime
 
 
+DEFAULT_VARIABLES = {
+    'online': .875,   #.875 memebux per hr
+    'voice': 1,    #1 memebux per hr
+    'messages': .02,   #.02 memebux per message
+    'maxMessages': 20
+}
 msgs = {}
 login = time.time()
 times = []
@@ -14,6 +18,13 @@ memeBank = []
 loaded = []
 buxmemeoji = "<:memeBUX:380510554349109249>"
 loggedIn = time.time()
+
+try:
+    with open("cogs\\config.json", "r") as f:
+        CONFIG_VARIABLES = json.load(f)
+except json.decoder.JSONDecodeError:
+    with open("cogs\\config.json", "w") as f:
+        json.dump(DEFAULT_VARIABLES, f, indent = 2)
 
 
 class timestamps:
@@ -30,7 +41,6 @@ class timestamps:
         return self.id == other
 
 
-
 class user:
     def __init__(self, name, id, memeBUX: Decimal):
         self.name = name
@@ -40,7 +50,11 @@ class user:
     def __eq__(self, other):
         return self.id == other
 
-class memebux:
+
+class memebux():
+
+    def __init__(self, bot):
+        self.bot = bot
 
     try:
         loaded = json.load(open("cogs\\bank.json", "r"))
@@ -50,8 +64,23 @@ class memebux:
     except json.decoder.JSONDecodeError:
         pass
 
-    def __init__(self, bot):
-        self.bot = bot
+    def save(self):
+        global loaded
+        try:
+            loaded = json.load(open("cogs\\bank.json", "r"))
+        except json.decoder.JSONDecodeError:
+            pass
+        for x in memeBank:
+            copy = x.__dict__.copy()
+            copy['memeBUX'] = str(copy['memeBUX'])
+            if loaded and self.inLoaded(copy):
+                for i in range(len(loaded)):
+                    if loaded[i]['id'] == copy['id']:
+                        loaded.__setitem__(i, copy)
+            else:
+                loaded.append(copy)
+        with open("cogs\\bank.json", "w") as f:
+            json.dump(loaded, f, indent = 2)
 
     def format(self, number):
         return Decimal(number).quantize(Decimal('0.00'), rounding = ROUND_UP)
@@ -75,28 +104,12 @@ class memebux:
         return False
 
     def resetMessageCounts(self):
-        for x in times:
-            x.totalMessages = 0
-            x.messages = 0
-
-    def save(self):
-        global loaded
-        try:
-            loaded = json.load(open("cogs\\bank.json", "r"))
-        except json.decoder.JSONDecodeError:
-            pass
-        for x in memeBank:
-            copy = x.__dict__.copy()
-            copy['memeBUX'] = str(copy['memeBUX'])
-            if loaded and self.inLoaded(copy):
-                for i in range(len(loaded)):
-                    if loaded[i]['id'] == copy['id']:
-                        loaded.__setitem__(i, copy)
-            else:
-                loaded.append(copy)
-        with open("cogs\\bank.json", "w") as f:
-            json.dump(loaded, f, indent = 2)
-
+        global loggedIn
+        if time.time() - loggedIn > 60:
+            for x in times:
+                x.totalMessages = 0
+                x.messages = 0
+            loggedIn -= loggedIn % 60    #sets loggedIn to the latest X second interval
 
     async def checkBalance(self, id, amount):
         if self.searchForUser(id) == -1:
@@ -112,7 +125,7 @@ class memebux:
         await self.bot.say("{} seconds until message counts reset".format(time.time() - loggedIn))
 
     @commands.command(pass_context = True)
-    async def adduser(self, ctx):
+    async def register(self, ctx):
         if self.searchForUser(ctx.message.author.id) == -1:
             memeBank.append(user(ctx.message.author.name,ctx.message.author.id, self.format(0)))
             self.save()
@@ -137,7 +150,7 @@ class memebux:
             await self.bot.say("**{}** gave **{}** {} memeBUX\n\n{}".format(ctx.message.author.display_name, user.display_name, amount, buxmemeoji))
 
     @commands.command(pass_context = True)
-    async def add(self, ctx, amount : int):
+    async def giveme(self, ctx, amount : int):
         if self.searchForUser(ctx.message.author.id) == -1:
             await self.bot.say("acc dont exist vroski\n\n{}".format(buxmemeoji))
         else:
@@ -145,73 +158,56 @@ class memebux:
             self.save()
             await self.bot.say("just added {} memeBUX to {} dont spend it all on one meme\n\n{}".format(amount, ctx.message.author.display_name, buxmemeoji))
 
+    def addMessage(self, message, index):
+        msgs[message.id] = True
+        times[index].messages += 1
+
     @commands.command(pass_context = True)
     async def getpaid(self, ctx):
-        global loggedIn
-        i = self.searchForTimestamp(ctx.message.author.id)
-        u = self.searchForUser(ctx.message.author.id)
+        timeIndex = self.searchForTimestamp(ctx.message.author.id)
+        userIndex = self.searchForUser(ctx.message.author.id)
         payment = 0
         paymentVoice = 0
         paymentMessages = 0
         onlineTime = 0
         voiceTime = 0
         messages = 0
-        if time.time() - loggedIn > 60:
-            self.resetMessageCounts()
-            loggedIn += 60
-        msgs[ctx.message.id] = True
-        times[i].messages += 1
-        if times[i].online is not None: #if a time stamp exists then add any time they had before to the time in this current session and reset the timestamp
-            onlineTime = times[i].totalOnline + (time.time() - times[i].online)
-            payment = self.format(onlineTime * (1/3150))
-            memeBank[u].memeBUX += payment
-            times[i].totalOnline = 0
-            times[i].online = time.time()
-
-
+        self.resetMessageCounts()
+        self.addMessage(ctx.message, timeIndex)
+        if times[timeIndex].online is not None: #if a time stamp exists then add any time they had before to the time in this current session and reset the timestamp
+            onlineTime = times[timeIndex].totalOnline + (time.time() - times[timeIndex].online)
+            payment = self.format(onlineTime * (CONFIG_VARIABLES['online'] / 3600))
+            memeBank[userIndex].memeBUX += payment
+            times[timeIndex].totalOnline = 0
+            times[timeIndex].online = time.time()
         else:#if no time stamp exists then they must either have already left before or never been online
-            onlineTime = times[i].totalOnline
-            payment = self.format(onlineTime * (1 / 3150))
-            memeBank[u].memeBUX += payment
-            times[i].totalOnline = 0
+            onlineTime = times[timeIndex].totalOnline
+            payment = self.format(onlineTime * (CONFIG_VARIABLES['online'] / 3600))
+            memeBank[userIndex].memeBUX += payment
+            times[timeIndex].totalOnline = 0
 
-        if times[i].voiceOnline is not None:
-            voiceTime = times[i].totalVoiceOnline + (time.time() - times[i].voiceOnline)
-            paymentVoice = self.format(voiceTime * (1/3600))
-            memeBank[u].memeBUX += paymentVoice
-            times[i].totalVoiceOnline = 0
-            times[i].voiceOnline = time.time()
-
+        if times[timeIndex].voiceOnline is not None:
+            voiceTime = times[timeIndex].totalVoiceOnline + (time.time() - times[timeIndex].voiceOnline)
+            paymentVoice = self.format(voiceTime * (CONFIG_VARIABLES['voice'] / 3600))
+            memeBank[userIndex].memeBUX += paymentVoice
+            times[timeIndex].totalVoiceOnline = 0
+            times[timeIndex].voiceOnline = time.time()
         else:
-            voiceTime = times[i].totalVoiceOnline
-            paymentVoice = self.format(voiceTime * (1 / 3600))
-            memeBank[u].memeBUX += paymentVoice
-            times[i].totalVoiceOnline = 0
+            voiceTime = times[timeIndex].totalVoiceOnline
+            paymentVoice = self.format(voiceTime * (CONFIG_VARIABLES['voice'] / 3600))
+            memeBank[userIndex].memeBUX += paymentVoice
+            times[timeIndex].totalVoiceOnline = 0
 
-        if times[i].totalMessages < 20:
-            if times[i].messages + times[i].totalMessages > 20:
-                times[i].messages = 20 - times[i].totalMessages
-            times[i].totalMessages += times[i].messages
-            messages = times[i].messages
-            print("messages:{}".format(messages))
-            paymentMessages = self.format(messages * (1/50))
-            memeBank[u].memeBUX += paymentMessages
-            times[i].messages = 0
-            print(times[i].totalMessages)
+        if times[timeIndex].totalMessages < CONFIG_VARIABLES['maxMessages']:
+            if times[timeIndex].messages + times[timeIndex].totalMessages > CONFIG_VARIABLES['maxMessages']:
+                times[timeIndex].messages = CONFIG_VARIABLES['maxMessages'] - times[timeIndex].totalMessages
+            times[timeIndex].totalMessages += times[timeIndex].messages
+            messages = times[timeIndex].messages
+            paymentMessages = self.format(messages * CONFIG_VARIABLES['messages'])
+            memeBank[userIndex].memeBUX += paymentMessages
+            times[timeIndex].messages = 0
         self.save()
         await self.bot.say("you just got {} memeBUX for being online for {} seconds, being in voice for {} seconds, and sending {} messages\n\n{}".format(payment + paymentVoice + paymentMessages, onlineTime, voiceTime, messages, buxmemeoji))
-
-
-    async def on_ready(self):
-        for member in self.bot.get_server('285130380603031562').members:
-            if member.status is not discord.Status.offline:
-                print(member.display_name)
-                if member.voice_channel is not None:
-                    times.append(timestamps(member.id, time.time(), time.time()))
-                else:
-                    times.append(timestamps(member.id, time.time()))
-            else:
-                times.append(timestamps(member.id))
 
     async def on_member_update(self, before, after):
         if before.status is discord.Status.offline and after.status is not discord.Status.offline:
@@ -229,17 +225,23 @@ class memebux:
 
     async def on_message(self, msg):
         if self.searchForUser(msg.author.id) != -1:
-            if msgs.get(msg.id, False) == False:
+            if msgs.get(msg.id, False) is False:
                 print(msg.content)
                 times[self.searchForTimestamp(msg.author.id)].messages += 1
                 print("msgs {}".format(times[self.searchForTimestamp(msg.author.id)].messages))
 
-
-
-
+    async def on_ready(self):
+        for member in self.bot.get_server('285130380603031562').members:
+            if member.status is not discord.Status.offline:
+                print(member.display_name)
+                if member.voice_channel is not None:
+                    times.append(timestamps(member.id, time.time(), time.time()))
+                else:
+                    times.append(timestamps(member.id, time.time()))
+            else:
+                times.append(timestamps(member.id))
 
 
 def setup(bot):
-    bot.add_cog(memebux(bot))
-
-
+    meme = memebux(bot)
+    bot.add_cog(meme)
